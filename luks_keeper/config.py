@@ -19,6 +19,7 @@ class AppConfig:
     snapshot_root: Optional[str]
     retention_days: int
     key_dir: str
+    gpg_recipient: str
 
 def load_config(path: Optional[str] = None) -> AppConfig:
     """Load YAML config from DEFAULT_CONFIG_PATH or given path."""
@@ -46,5 +47,6 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         snapshot_root=data.get("snapshot_root"),
         retention_days=int(data.get("retention_days", 30)),
         key_dir=os.path.expanduser(data.get("key_dir", "~/.luks-keeper/keys")),
+        gpg_recipient=data["gpg_recipient"],
     )
 
