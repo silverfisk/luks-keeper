@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "luks-keeper"
+version = "0.1.0"
+description = "Secure LUKS passphrase manager with optional Btrfs snapshots"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "click",
+  "PyYAML"
+]
+
+[project.scripts]
+# this makes the command `luks-keeper` point at your click CLI
+luks-keeper = "luks_keeper.cli:cli"
