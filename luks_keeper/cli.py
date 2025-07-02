@@ -13,38 +13,56 @@ def cli():
 
 @cli.command("key")
 @click.argument("device")
-@click.option("--rotate", is_flag=True, help="Rotate encrypted passphrase for a device")
-@click.option("--config", "config_path", default=None,
-              help="Path to config.yaml (default reads from ~/.config/luks-keeper)")
+@click.option(
+    "--rotate",
+    is_flag=True,
+    help="Rotate (re-encrypt) the passphrase file for a device"
+)
+@click.option(
+    "--config", "config_path",
+    default=None,
+    help="Path to config.yaml (default: ~/.config/luks-keeper/config.yaml)"
+)
 def manage_key(device: str, rotate: bool, config_path: str):
     """
     Ensure or rotate the encrypted LUKS passphrase file for DEVICE.
     """
     cfg = load_config(config_path)
     pm = PassphraseManager(cfg)
+
     if rotate:
         pm.rotate(device)
     else:
         pm.ensure_exists(device)
 
 @cli.command("mount")
-@click.option("--config", "config_path", default=None,
-              help="Path to config.yaml (default reads from ~/.config/luks-keeper)")
+@click.option(
+    "--config", "config_path",
+    default=None,
+    help="Path to config.yaml (default: ~/.config/luks-keeper/config.yaml)"
+)
 def mount_and_snapshot(config_path: str):
     """
-    Open & mount all LUKS devices, prune old snapshots, and create a new one.
+    Open all LUKS devices, mount the first, prune old snapshots, and create a new one.
     """
     cfg = load_config(config_path)
     pm = PassphraseManager(cfg)
 
-    # Open and mount each device
-    for dev_cfg in cfg.devices:
-        device = LUKSDevice(dev_cfg, pm)
-        device.ensure_open_and_mounted()
+    # 1) Ensure every passphrase blob exists
+    for dev in cfg.devices:
+        pm.ensure_exists(dev.name)
 
-    # If snapshot_root is configured, run pruning and snapshotting
+    # 2) Open (decrypt) every LUKS device
+    for dev in cfg.devices:
+        LUKSDevice(dev, pm).open()
+
+    # 3) Mount only the first device’s mapping (Btrfs RAID needs all peers opened)
+    first = cfg.devices[0]
+    if first.mount_point:
+        LUKSDevice(first, pm).mount()
+
+    # 4) If snapshot support is configured, prune old and create a new snapshot
     if cfg.snapshot_root and cfg.devices:
-        # Use the first device's mount_point as the snapshot source
         source = cfg.devices[0].mount_point
         snaps = SnapshotManager(cfg.snapshot_root, cfg.retention_days)
         snaps.prune_old()
