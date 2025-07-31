@@ -53,12 +53,16 @@ def mount_and_snapshot(config_path: str):
         # 1) Run global pre-mount hook
         run_hook(cfg, "on_before_mount_all")
 
-        # 2) Ensure passphrases exist, then open and mount each device
+        # 2) Ensure passphrases exist and open each device
         for dev_cfg in cfg.devices:
             pm.ensure_exists(dev_cfg.name)
-            LUKSDevice(cfg, dev_cfg, pm).ensure_open_and_mounted()
+            LUKSDevice(cfg, dev_cfg, pm).open()
 
-        # 3) If snapshot support is configured, prune old and create a new snapshot
+        # 3) Mount each device
+        for dev_cfg in cfg.devices:
+            LUKSDevice(cfg, dev_cfg, pm).mount()
+
+        # 4) If snapshot support is configured, prune old and create a new snapshot
         if cfg.snapshot_root and cfg.devices:
             source = cfg.devices[0].mount_point
             snaps = SnapshotManager(cfg.snapshot_root, cfg.retention_days)
@@ -66,7 +70,7 @@ def mount_and_snapshot(config_path: str):
             new_snap = snaps.create_auto_snapshot(source)
             click.echo(f"Snapshot created at: {new_snap}")
 
-        # 4) Run global post-mount hook
+        # 5) Run global post-mount hook
         run_hook(cfg, "on_after_mount_all")
         click.secho("All devices mounted successfully.", fg="green")
 
@@ -91,11 +95,15 @@ def unmount_all(config_path: str):
         # 1) Run global pre-unmount hook
         run_hook(cfg, "on_before_unmount_all")
 
-        # 2) Unmount and close each device (in reverse order)
+        # 2) Unmount each device (in reverse order)
         for dev_cfg in reversed(cfg.devices):
-            LUKSDevice(cfg, dev_cfg, pm).ensure_unmounted_and_closed()
+            LUKSDevice(cfg, dev_cfg, pm).unmount()
 
-        # 3) Run global post-unmount hook
+        # 3) Close each device (in reverse order)
+        for dev_cfg in reversed(cfg.devices):
+            LUKSDevice(cfg, dev_cfg, pm).close()
+
+        # 4) Run global post-unmount hook
         run_hook(cfg, "on_after_unmount_all")
         click.secho("All devices unmounted successfully.", fg="green")
 

@@ -4,6 +4,7 @@ from pathlib import Path
 from .keys import PassphraseManager
 from .config import AppConfig, DeviceConfig
 from .hooks import run_hook
+import click # Import click for secho
 
 def _sudo_cmd(cmd: list) -> list:
     """
@@ -49,12 +50,38 @@ class LUKSDevice:
             cmd = _sudo_cmd([
                 "cryptsetup", "luksOpen", self.config.devnode, self.config.name
             ])
-            subprocess.run(
-                cmd,
-                input=pw + "\n",
-                text=True,
-                check=True,
-            )
+            try:
+                subprocess.run(
+                    cmd,
+                    input=pw + "\n",
+                    text=True,
+                    check=True,
+                    capture_output=True,
+                )
+            except subprocess.CalledProcessError as e:
+                # Check if the error is due to the device mapper name already existing
+                if f"Device {self.config.name} already exists." in e.stderr:
+                    click.secho(
+                        f"Warning: Device mapper name '{self.config.name}' already exists "
+                        "but is not reported as an open LUKS device. "
+                        "Attempting to close it before re-opening.",
+                        fg="yellow"
+                    )
+                    try:
+                        # Attempt to close the conflicting device mapper entry
+                        subprocess.run(_sudo_cmd(["cryptsetup", "luksClose", self.config.name]), check=True)
+                        # Retry opening after closing
+                        subprocess.run(
+                            cmd,
+                            input=pw + "\n",
+                            text=True,
+                            check=True,
+                        )
+                    except subprocess.CalledProcessError as retry_e:
+                        click.secho(f"Error: Failed to open device '{self.config.name}' even after attempting to close a conflicting entry.", fg="red")
+                        raise retry_e # Re-raise the error if retry fails
+                else:
+                    raise e # Re-raise other CalledProcessError
             run_hook(self.app_config, "on_after_open", self.config)
 
     def close(self) -> None:
@@ -87,7 +114,11 @@ class LUKSDevice:
             cmd = _sudo_cmd([
                 "mount", f"/dev/mapper/{self.config.name}", self.config.mount_point
             ])
-            subprocess.run(cmd, check=True)
+            try:
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
+            except subprocess.CalledProcessError as e:
+                click.secho(f"Error mounting device {self.config.name}: {e.stderr}", fg="red")
+                raise e
             run_hook(self.app_config, "on_after_mount", self.config)
 
     def unmount(self) -> None:
