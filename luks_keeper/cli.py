@@ -3,6 +3,7 @@ from .config import load_config
 from .keys import PassphraseManager
 from .devices import LUKSDevice
 from .snaps import SnapshotManager
+from .hooks import run_hook, HookExecutionError
 
 @click.group()
 def cli():
@@ -43,33 +44,64 @@ def manage_key(device: str, rotate: bool, config_path: str):
 )
 def mount_and_snapshot(config_path: str):
     """
-    Open all LUKS devices, mount the first, prune old snapshots, and create a new one.
+    Open all LUKS devices, mount them, and create snapshots if configured.
     """
-    cfg = load_config(config_path)
-    pm = PassphraseManager(cfg)
+    try:
+        cfg = load_config(config_path)
+        pm = PassphraseManager(cfg)
 
-    # 1) Ensure every passphrase blob exists
-    for dev in cfg.devices:
-        pm.ensure_exists(dev.name)
+        # 1) Run global pre-mount hook
+        run_hook(cfg, "on_before_mount_all")
 
-    # 2) Open (decrypt) every LUKS device
-    for dev in cfg.devices:
-        LUKSDevice(dev, pm).open()
+        # 2) Ensure passphrases exist, then open and mount each device
+        for dev_cfg in cfg.devices:
+            pm.ensure_exists(dev_cfg.name)
+            LUKSDevice(cfg, dev_cfg, pm).ensure_open_and_mounted()
 
-    # 3) Mount only the first device’s mapping (Btrfs RAID needs all peers opened)
-    first = cfg.devices[0]
-    if first.mount_point:
-        LUKSDevice(first, pm).mount()
+        # 3) If snapshot support is configured, prune old and create a new snapshot
+        if cfg.snapshot_root and cfg.devices:
+            source = cfg.devices[0].mount_point
+            snaps = SnapshotManager(cfg.snapshot_root, cfg.retention_days)
+            snaps.prune_old()
+            new_snap = snaps.create_auto_snapshot(source)
+            click.echo(f"Snapshot created at: {new_snap}")
 
-    # 4) If snapshot support is configured, prune old and create a new snapshot
-    if cfg.snapshot_root and cfg.devices:
-        source = cfg.devices[0].mount_point
-        snaps = SnapshotManager(cfg.snapshot_root, cfg.retention_days)
-        snaps.prune_old()
-        new_snap = snaps.create_auto_snapshot(source)
-        click.echo(f"Snapshot created at: {new_snap}")
+        # 4) Run global post-mount hook
+        run_hook(cfg, "on_after_mount_all")
+        click.secho("All devices mounted successfully.", fg="green")
 
-    click.echo("All done.")
+    except (FileNotFoundError, HookExecutionError) as e:
+        click.secho(f"Error: {e}", fg="red")
+        exit(1)
+
+@cli.command("unmount")
+@click.option(
+    "--config", "config_path",
+    default=None,
+    help="Path to config.yaml (default: ~/.config/luks-keeper/config.yaml)"
+)
+def unmount_all(config_path: str):
+    """
+    Unmount and close all LUKS devices.
+    """
+    try:
+        cfg = load_config(config_path)
+        pm = PassphraseManager(cfg)
+
+        # 1) Run global pre-unmount hook
+        run_hook(cfg, "on_before_unmount_all")
+
+        # 2) Unmount and close each device (in reverse order)
+        for dev_cfg in reversed(cfg.devices):
+            LUKSDevice(cfg, dev_cfg, pm).ensure_unmounted_and_closed()
+
+        # 3) Run global post-unmount hook
+        run_hook(cfg, "on_after_unmount_all")
+        click.secho("All devices unmounted successfully.", fg="green")
+
+    except (FileNotFoundError, HookExecutionError) as e:
+        click.secho(f"Error: {e}", fg="red")
+        exit(1)
 
 if __name__ == "__main__":
     cli()

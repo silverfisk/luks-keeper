@@ -1,17 +1,23 @@
 import os
 import yaml
 from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, field
+from typing import List, Optional, Dict
 
 # Default location for config file
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "luks-keeper" / "config.yaml"
+
+@dataclass
+class HookConfig:
+    command: str
+    ignore_errors: bool = False
 
 @dataclass
 class DeviceConfig:
     name: str
     devnode: str
     mount_point: Optional[str]  # None or "none" to skip mounting
+    hooks: Dict[str, HookConfig] = field(default_factory=dict)
 
 @dataclass
 class AppConfig:
@@ -20,6 +26,20 @@ class AppConfig:
     retention_days: int
     key_dir: str
     gpg_recipient: str
+    hooks: Dict[str, HookConfig] = field(default_factory=dict)
+
+def _parse_hooks(data: dict) -> Dict[str, HookConfig]:
+    """Parse a dictionary of hooks into HookConfig objects."""
+    hooks = {}
+    for name, hook_data in data.items():
+        if isinstance(hook_data, str):
+            hooks[name] = HookConfig(command=hook_data)
+        elif isinstance(hook_data, dict):
+            hooks[name] = HookConfig(
+                command=hook_data["command"],
+                ignore_errors=hook_data.get("ignore_errors", False),
+            )
+    return hooks
 
 def load_config(path: Optional[str] = None) -> AppConfig:
     """Load YAML config from DEFAULT_CONFIG_PATH or given path."""
@@ -40,6 +60,7 @@ def load_config(path: Optional[str] = None) -> AppConfig:
             name=d["name"],
             devnode=d["devnode"],
             mount_point=mp,
+            hooks=_parse_hooks(d.get("hooks", {})),
         ))
 
     return AppConfig(
@@ -48,5 +69,5 @@ def load_config(path: Optional[str] = None) -> AppConfig:
         retention_days=int(data.get("retention_days", 30)),
         key_dir=os.path.expanduser(data.get("key_dir", "~/.luks-keeper/keys")),
         gpg_recipient=data["gpg_recipient"],
+        hooks=_parse_hooks(data.get("hooks", {})),
     )
-

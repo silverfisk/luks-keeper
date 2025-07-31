@@ -2,8 +2,8 @@ import os
 import subprocess
 from pathlib import Path
 from .keys import PassphraseManager
-from .config import DeviceConfig
-
+from .config import AppConfig, DeviceConfig
+from .hooks import run_hook
 
 def _sudo_cmd(cmd: list) -> list:
     """
@@ -13,20 +13,19 @@ def _sudo_cmd(cmd: list) -> list:
         return ["sudo"] + cmd
     return cmd
 
-
 class LUKSDevice:
     """
     Represents a LUKS-encrypted block device that can be opened and mounted.
-
-    Attributes:
-        config (DeviceConfig): Device configuration.
-        passman (PassphraseManager): Passphrase manager to decrypt LUKS key.
     """
 
-    def __init__(self, config: DeviceConfig, passman: PassphraseManager):
-        self.name = config.name
-        self.devnode = config.devnode
-        self.mount_point = config.mount_point
+    def __init__(
+        self,
+        global_config: AppConfig,
+        device_config: DeviceConfig,
+        passman: PassphraseManager,
+    ):
+        self.app_config = global_config
+        self.config = device_config
         self.passman = passman
 
     def is_open(self) -> bool:
@@ -34,7 +33,7 @@ class LUKSDevice:
         Check if the LUKS device is already opened.
         """
         result = subprocess.run(
-            ["cryptsetup", "status", self.name],
+            ["cryptsetup", "status", self.config.name],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -43,14 +42,12 @@ class LUKSDevice:
     def open(self) -> None:
         """
         Open (decrypt) the LUKS device if not already open.
-        Prompts GPG for passphrase decryption.
         """
         if not self.is_open():
-            # Decrypt passphrase
-            pw = self.passman.decrypt(self.name)
-            # Open with cryptsetup
+            run_hook(self.app_config, "on_before_open", self.config)
+            pw = self.passman.decrypt(self.config.name)
             cmd = _sudo_cmd([
-                "cryptsetup", "luksOpen", self.devnode, self.name
+                "cryptsetup", "luksOpen", self.config.devnode, self.config.name
             ])
             subprocess.run(
                 cmd,
@@ -58,27 +55,50 @@ class LUKSDevice:
                 text=True,
                 check=True,
             )
+            run_hook(self.app_config, "on_after_open", self.config)
+
+    def close(self) -> None:
+        """
+        Close (re-encrypt) the LUKS device if it's open.
+        """
+        if self.is_open():
+            run_hook(self.app_config, "on_before_close", self.config)
+            cmd = _sudo_cmd(["cryptsetup", "luksClose", self.config.name])
+            subprocess.run(cmd, check=True)
+            run_hook(self.app_config, "on_after_close", self.config)
 
     def is_mounted(self) -> bool:
         """
         Check if the device is already mounted at its mount point.
         """
-        if not self.mount_point:
+        if not self.config.mount_point:
             return False
         return subprocess.run(
-            ["mountpoint", "-q", self.mount_point]
+            ["mountpoint", "-q", self.config.mount_point]
         ).returncode == 0
 
     def mount(self) -> None:
         """
         Mount the opened device at the mount point, if configured.
         """
-        if self.mount_point and not self.is_mounted():
-            Path(self.mount_point).mkdir(parents=True, exist_ok=True)
+        if self.config.mount_point and not self.is_mounted():
+            run_hook(self.app_config, "on_before_mount", self.config)
+            Path(self.config.mount_point).mkdir(parents=True, exist_ok=True)
             cmd = _sudo_cmd([
-                "mount", f"/dev/mapper/{self.name}", self.mount_point
+                "mount", f"/dev/mapper/{self.config.name}", self.config.mount_point
             ])
             subprocess.run(cmd, check=True)
+            run_hook(self.app_config, "on_after_mount", self.config)
+
+    def unmount(self) -> None:
+        """
+        Unmount the device from its mount point, if configured and mounted.
+        """
+        if self.config.mount_point and self.is_mounted():
+            run_hook(self.app_config, "on_before_unmount", self.config)
+            cmd = _sudo_cmd(["umount", self.config.mount_point])
+            subprocess.run(cmd, check=True)
+            run_hook(self.app_config, "on_after_unmount", self.config)
 
     def ensure_open_and_mounted(self) -> None:
         """
@@ -86,3 +106,10 @@ class LUKSDevice:
         """
         self.open()
         self.mount()
+
+    def ensure_unmounted_and_closed(self) -> None:
+        """
+        Convenience method: unmount and close (re-encrypt) the device.
+        """
+        self.unmount()
+        self.close()
